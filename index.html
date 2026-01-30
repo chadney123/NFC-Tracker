@@ -3,20 +3,19 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>NFC Text Kiosk</title>
+    <title>NFC Offline Kiosk</title>
     <link rel="manifest" href="manifest.json">
     <meta name="mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="theme-color" content="#2ecc71">
     <style>
-        body { transition: background-color 0.6s ease; background-color: #2ecc71; font-family: 'Segoe UI', system-ui, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; color: white; text-align: center; overflow: hidden; }
+        body { transition: background-color 0.6s ease; background-color: #2ecc71; font-family: 'Segoe UI', sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; color: white; text-align: center; overflow: hidden; }
         .amber { background-color: #f39c12 !important; }
         #status { font-size: 2.2rem; font-weight: bold; margin-bottom: 5px; }
         #sub-status { font-size: 1.1rem; opacity: 0.9; margin-bottom: 30px; height: 1.2em; }
-        #input-container { width: 100%; display: flex; flex-direction: column; align-items: center; }
-        input { padding: 18px; font-size: 1.4rem; border-radius: 12px; border: none; margin-bottom: 20px; width: 85%; max-width: 350px; text-align: center; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
-        button { padding: 20px 50px; font-size: 1.3rem; cursor: pointer; border: none; border-radius: 50px; background: white; color: #2ecc71; font-weight: bold; box-shadow: 0 6px 20px rgba(0,0,0,0.2); }
+        input { padding: 18px; font-size: 1.4rem; border-radius: 12px; border: none; margin-bottom: 20px; width: 85%; max-width: 350px; text-align: center; }
+        button { padding: 20px 50px; font-size: 1.3rem; cursor: pointer; border: none; border-radius: 50px; background: white; color: #2ecc71; font-weight: bold; }
         #lock-info { position: fixed; bottom: 15px; font-size: 0.75rem; opacity: 0.5; }
+        #input-container { width: 100%; display: flex; flex-direction: column; align-items: center; }
     </style>
 </head>
 <body>
@@ -29,13 +28,12 @@
         <button id="startBtn">Initialize Kiosk</button>
     </div>
 
-    <div id="lock-info">Wake Lock: Inactive | Reset: 08:00 AM</div>
+    <div id="lock-info">Wake Lock: Inactive | Daily Reset: 08:00 AM</div>
 
     <script>
         const body = document.body;
         const statusDisplay = document.getElementById('status');
         const subStatus = document.getElementById('sub-status');
-        const startBtn = document.getElementById('startBtn');
         const nameInput = document.getElementById('userName');
         const inputContainer = document.getElementById('input-container');
         const lockInfo = document.getElementById('lock-info');
@@ -44,6 +42,7 @@
         let isLocked = false;
         let wakeLock = null;
 
+        // --- 1. DAILY 8AM RESET ---
         function scheduleMorningReset() {
             const now = new Date();
             const resetTime = new Date();
@@ -53,6 +52,7 @@
         }
         scheduleMorningReset();
 
+        // --- 2. WAKE LOCK ---
         async function requestWakeLock() {
             try {
                 wakeLock = await navigator.wakeLock.request('screen');
@@ -60,25 +60,49 @@
             } catch (err) { console.error(err); }
         }
 
-        startBtn.onclick = () => { 
-            if(!nameInput.value.trim()) return alert("Please enter a name");
-            startNFC(); 
-            requestWakeLock();
-            inputContainer.style.visibility = 'hidden'; 
-        };
+        // --- 3. OFFLINE SYNC LOGIC ---
+        async function queueData(id, name, action) {
+            const cleanId = id.replace(/[^\x20-\x7E]/g, '').trim(); 
+            const payload = { id: cleanId, name, action, timestamp: new Date().toISOString() };
 
+            let queue = JSON.parse(localStorage.getItem('nfc_queue') || '[]');
+            queue.push(payload);
+            localStorage.setItem('nfc_queue', JSON.stringify(queue));
+
+            processQueue();
+        }
+
+        async function processQueue() {
+            const WEB_APP_URL = "YOUR_GOOGLE_SCRIPT_URL";
+            let queue = JSON.parse(localStorage.getItem('nfc_queue') || '[]');
+
+            if (queue.length === 0 || !navigator.onLine) {
+                if (queue.length > 0) subStatus.innerText = `Offline: ${queue.length} scans queued`;
+                return;
+            }
+
+            for (const item of [...queue]) {
+                try {
+                    await fetch(WEB_APP_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(item) });
+                    queue = queue.filter(q => q.timestamp !== item.timestamp);
+                    localStorage.setItem('nfc_queue', JSON.stringify(queue));
+                } catch (e) { break; }
+            }
+        }
+
+        window.addEventListener('online', processQueue);
+
+        // --- 4. NFC LOGIC (READS TEXT) ---
         async function startNFC() {
             if ("NDEFReader" in window) {
                 try {
                     const ndef = new NDEFReader();
                     await ndef.scan();
                     statusDisplay.innerText = "Ready, " + nameInput.value;
-                    subStatus.innerText = "Tap NFC Tag to Clock In";
+                    subStatus.innerText = "Tap Tag to Clock In";
 
                     ndef.onreading = async ({ message, serialNumber }) => {
                         if (isLocked) return; 
-
-                        // DECODE NDEF TEXT
                         let textData = "";
                         const decoder = new TextDecoder();
                         for (const record of message.records) {
@@ -87,64 +111,47 @@
                                 break; 
                             }
                         }
-
-                        // Use Text, fallback to Serial Number
                         const finalId = textData || serialNumber;
-
-                        processScan(finalId);
+                        if (finalId) processScan(finalId);
                         
                         isLocked = true;
-                        setTimeout(() => { 
-                            isLocked = false; 
-                            subStatus.innerText = activeSessionTagId ? "Ready to Clock Out" : "Tap Tag to Clock In";
-                        }, 5000);
+                        setTimeout(() => { isLocked = false; }, 5000);
                     };
-                } catch (error) {
-                    statusDisplay.innerText = "NFC Error";
-                    subStatus.innerText = "Check HTTPS/Permissions.";
-                }
+                } catch (error) { statusDisplay.innerText = "NFC Error"; }
             }
         }
 
+        // --- 5. SESSION LOGIC ---
         function processScan(id) {
             const name = nameInput.value;
             if (!activeSessionTagId) {
                 activeSessionTagId = id;
                 body.classList.add('amber');
                 statusDisplay.innerText = "Clocked In";
-                subStatus.innerText = "ID: " + id;
-                sendToSheets(id, name, "IN");
+                subStatus.innerText = "Active Session";
+                queueData(id, name, "IN");
             } else if (activeSessionTagId === id) {
                 activeSessionTagId = null;
                 body.classList.remove('amber');
                 statusDisplay.innerText = "Clocked Out";
-                subStatus.innerText = "Goodbye, " + name;
-                sendToSheets(id, name, "OUT");
+                subStatus.innerText = "Success, " + name;
+                queueData(id, name, "OUT");
                 setTimeout(() => {
                     if (!activeSessionTagId) {
                         statusDisplay.innerText = "Ready, " + name;
-                        subStatus.innerText = "Tap Tag to Clock In again";
+                        subStatus.innerText = "Tap Tag to Clock In";
                     }
                 }, 3000);
             } else {
-                const oldStatus = statusDisplay.innerText;
                 statusDisplay.innerText = "Wrong Tag!";
-                setTimeout(() => { statusDisplay.innerText = oldStatus; }, 2500);
             }
         }
 
-        async function sendToSheets(id, name, action) {
-            const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbyoBYr3TIspFuqpABPZLglegcmjeNshljGK-MkVuNhDFZnOKF-LlFGVK7BClwFYUTIE2g/exec"; 
-            fetch(WEB_APP_URL, {
-                method: 'POST',
-                mode: 'no-cors',
-                body: JSON.stringify({ id, name, action })
-            });
-        }
-
-        if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('sw.js');
-        }
+        document.getElementById('startBtn').onclick = () => { 
+            if(!nameInput.value.trim()) return alert("Enter name");
+            startNFC(); requestWakeLock();
+            inputContainer.style.visibility = 'hidden'; 
+        };
     </script>
 </body>
 </html>
