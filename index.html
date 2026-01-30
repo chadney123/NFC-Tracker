@@ -73,7 +73,7 @@
         }
 
         async function processQueue() {
-            const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbzrd84U0UHfA-5NWpoeG6moLlLV5Jrq68ztVihNEEVAm8ixqzelop_AWv6OWzEzriD2/exec";
+            const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbzVb0B2YysisonWQAzqIyp79AOx6uYlbK9bHdB0uG35QjZcxbzozwsl4f-EXIvMH4_n/exec";
             let queue = JSON.parse(localStorage.getItem('nfc_queue') || '[]');
 
             if (queue.length === 0 || !navigator.onLine) {
